@@ -45,6 +45,9 @@
 
 .. Add content below. Do not include the document title.
 
+Design Trade-Offs
+=================
+
 The LSST database design involves many architectural choices. Example of
 architectural decisions we faced include how to partition the tables,
 how many levels of partitioning is needed, where to use an index, how to
@@ -397,8 +400,145 @@ https://dev.lsstcorp.org/trac/wiki/db/MySQL/Optimizations.
 .. [#] Some of these optimizations will not be required when we use
    Qserv, as Qserv will apply them internally.
 
+.. _other-demonstrations:
+
+Other Demonstrations
+====================
+
+.. _demo-shared-scans:
+
+Shared Scans
+------------
+
+We have conducted preliminary empirical evaluation of our basic shared
+scan implementation. The software worked exactly as expected, and we
+have not discovered any unforeseen challenges. For the tests we used a
+mix of queries with a variety of filters, different CPU load, different
+result sizes, some with grouping, some with aggregations, some with
+complex math. Specifically, we have measured the following:
+
+- A single full table scan through the Object table took ~3 minutes.
+  Running a mix 30 such queries using our shared scan code took 5 min 27
+  sec (instead of expected ~1.5 hour it’d take if we didn’t use the
+  shared scan code.)
+
+- A single full table scan through Source table took between ~14 min 26
+  sec and 14 min 36 sec depending on query complexity. Running a mix of
+  30 such queries using shares scan code took 25 min 30 sec.  (instead
+  of over 7 hours).
+
+In both cases the extra time it took comparing to the timing of a single
+query was related to (expected) CPU contention: we have run 30
+simultaneous queries on a slow, 4-core machine.
+
+In addition, we demonstrated running simultaneously a shared scan plus
+short, interactive queries. The interactive queries completed as
+expected, in some cases with a small (1-2 sec) delay.
+
+.. _demo-fault-tolerance:
+
+Fault Tolerance
+---------------
+
+To prove Qserv can gracefully handle faults, we artificially triggered
+different error conditions, such as corrupting random parts of a
+internal MySQL files while Qserv is reading them, or corrupting data
+sent between various components of the Qserv (e.g., from the `XRootD`_ to
+the master process).
+
+.. _demo-worker-failure:
+
+Worker failure
+~~~~~~~~~~~~~~
+
+These tests are meant to simulate worker failure in general, including
+spontaneous termination of a worker process and/or inability to
+communicate with a worker node.
+
+When a relevant worker (i.e. one managing relevant data) has failed
+prior to query execution, either 1) duplicate data exists on another
+worker node, in which case `XRootD`_ silently routes requests from the
+master to this other node, or 2) the data is unavailable elsewhere, in
+which case `XRootD`_ returns an error code in response to the master's
+request to open for write. The former scenario has been successfully
+demonstrated during multi-node cluster tests. In the latter scenario,
+Qserv gracefully terminates the query and returns an error to the user.
+The error handling of the latter scenario involves recently developed
+logic and has been successfully demonstrated on a single-node,
+multi-worker process setup.
+
+Worker failure during query execution can, in principle, have several
+manifestations.
+
+1. If `XRootD`_ returns an error to the Qserv master in response to a
+   request to open for write, Qserv will repeat request for open a fixed
+   number (e.g. 5) of times. This has been demonstrated.
+
+2. If `XRootD`_ returns an error to the Qserv master in response to a
+   write, Qserv immediately terminates the query gracefully and returns
+   an error to the user. This has been demonstrated. Note that this may
+   be considered acceptable behavior (as opposed to attempting to
+   recover from the error) since it is an unlikely failure-mode.
+
+3. If `XRootD`_ returns an error to the Qserv master in response to a
+   request to open for read, Qserv will attempt to recover by
+   re-initializing the associated chunk query in preparation for a
+   subsequent write. This is considered the most likely manifestation of
+   worker failure and has been successfully demonstrated on a
+   single-node, multi-worker process setup.
+
+4. If `XRootD`_ returns an error to the Qserv master in response to a read,
+   Qserv immediately terminates the query gracefully and returns an
+   error to the user. This has been demonstrated. Note that this may be
+   considered acceptable behavior (as opposed to attempting to recover
+   from the error) since it is an unlikely failure-mode.
+
+.. _demo-data-corruption:
+
+Data corruption
+~~~~~~~~~~~~~~~
+
+These tests are meant to simulate data corruption that might occur on
+disk, during disk I/O, or during communication over the network. We
+simulate these scenarios in one of two ways. 1) Truncate data read via
+`XRootD`_ by the Qserv master to an arbitrary length. 2) Randomly choose a
+single byte within a data stream read via `XRootD`_ and change it to a
+random value. The first test necessarily triggers an exception within
+Qserv. Qserv responds by gracefully terminating the query and returning
+an error message to the user indicating the point of failure (e.g.
+failed while merging query results). The second test intermittently
+triggers an exception depending on which portion of the query result is
+corrupted. This is to be expected since Qserv verifies the format but
+not the content of query results. Importantly, for all tests, regardless
+of which portion of the query result was corrupted, the error was
+isolated to the present query and Qserv remained stable.
+
+.. _demo-future-tests:
+
+Future tests
+~~~~~~~~~~~~
+
+Much of the Qserv-specific fault tolerance logic was recently developed
+and requires additional testing. In particular, all worker failure
+simulations described above must be replicated within a multi-cluster
+setup.
+
+.. _multiple-qserve:
+
+Multiple Qserv Installations on a Single Machine
+------------------------------------------------
+
+Once in operations, it will be important to allow multiple qserv
+instances to coexist on a single machine. This will be necessary when
+deploying new Data Release, or for testing new version of the software
+(e.g., MySQL, or Qserv). In the short term, it is useful for shared code
+development and testing on a limited number of development machines we
+have access to. We have successfully demonstrated Qserv have no
+architectural issues or hardcoded values such as ports or paths that
+would prevent us from running multiple instances on a single machine.
+
 References
-----------
+==========
 
 .. bibliography:: bibliography.bib
   :encoding: latex+latin
@@ -407,3 +547,5 @@ References
 .. note::
 
   This document was originally published as a part of :cite:`Document-11625` and then part of :cite:`LDM-135`.
+
+.. _XRootD: http://xrootd.org
