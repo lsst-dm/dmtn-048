@@ -45,6 +45,12 @@
 
 .. Add content below. Do not include the document title.
 
+.. note::
+
+  This tech note is a collection of Qserv prototyping experiments drawn from different locations. The first two sections were originally published in :cite:`Document-11625` and subsequently :cite:`LDM-135` (`see DocuShare version 18 <https://docushare.lsstcorp.org/docushare/dsweb/Get/Version-24508/LDM-135.pdf>`_).
+  `Document LDM-135 <https://ls.st/LDM-135>`_ no longer contains the historical background and the content has been migrated to different locations.
+  The later sections are tests from `LSST Trac`_ that were referenced from the first two sections of LDM-135.
+
 Design Trade-Offs
 =================
 
@@ -603,7 +609,7 @@ Here is the timing for this (optimized) query.
 | nRows   | mysql   | postgres   |
 +---------+---------+------------+
 | [K]     | [sec]   | [sec]      |
-+---------+---------+------------+
++=========+=========+============+
 | 1       | 1       | 5          |
 +---------+---------+------------+
 | 2       | 5       | 19         |
@@ -647,8 +653,8 @@ the query with index and without the objectId comparison:
 +---------+---------+---------+----------+
 | nRows   | was     | now     | faster   |
 +---------+---------+---------+----------+
-| [K]     | [sec]   | [sec]   | [%       |
-+---------+---------+---------+----------+
+| [K]     | [sec]   | [sec]   | [%]      |
++=========+=========+=========+==========+
 | 5       | 28      | 16.7    | 40       |
 +---------+---------+---------+----------+
 | 10      | 101     | 67.2    | 33       |
@@ -674,7 +680,7 @@ How many CPUs do we need to do full correlation on 1 billion row table
 |             |              | self-join     | core-hours   | if 16 cores used   |
 +-------------+--------------+---------------+--------------+--------------------+
 |             |              | in 1 chunk    | needed       | twice faster       |
-+-------------+--------------+---------------+--------------+--------------------+
++=============+==============+===============+==============+====================+
 | 40,000      | 25,000       | 566           | 6,289        | 196                |
 +-------------+--------------+---------------+--------------+--------------------+
 | 50,000      | 20,000       | 368           | 5,111        | 160                |
@@ -722,7 +728,7 @@ This test is `here </_static/test003.py>`__. It took 13 min 13 sec.
 Near neighbor with predicates
 -----------------------------
 
-Note that full n^2 correlation without any cuts is the worst possible
+Note that full n\ :sup:`2` correlation without any cuts is the worst possible
 spatial join, rarely needed in practice. A most useful form of near
 neighbour search is a correlation with some predicates. Here is an
 example hypothetical (non-scientific) query, written for the data set
@@ -755,7 +761,9 @@ factors determining how slow/fast the spatial queries will run. In
 practice, if the selectivity is <10%, chunk size = ~25K or 50K rows
 should work well.
 
-``[perhaps we need to do more detailed study regarding predicate selectivity]``
+.. note::
+
+   Perhaps we need to do more detailed study regarding predicate selectivity.
 
 Numbers for lsst10
 ------------------
@@ -783,7 +791,7 @@ Each query run on a single partition. Results:
 
 +----------------------+--------------------------------------+----------------------------------+------------------------------------+
 | rows per partition   | seconds to self-join one partition   | rows processed per elapsed sec   | time to process 150m rows (DC3b)   |
-+----------------------+--------------------------------------+----------------------------------+------------------------------------+
++======================+======================================+==================================+====================================+
 | 0.5K                 | 0.05                                 | 80K                              | 31min                              |
 +----------------------+--------------------------------------+----------------------------------+------------------------------------+
 | 1K                   | 0.16                                 | 50K                              | 50min                              |
@@ -829,7 +837,7 @@ Justification
 -  sub-partitions can't be too small because the overlap will start
    playing big role, eg overlap over ~20% starts to become unacceptable.
 
-Object density will not vary too much, and will be ~ 5e5 / deg^2, or 140
+Object density will not vary too much, and will be ~ 5 x 10\ :sup:`5` / deg\ :sup:`2`\ , or 140
 objects / sqArcmin. (star:galaxy ratio will vary, but once we add both
 together it wont because the regions that have very high star densities
 also have very high extinction, so that background galaxies are very
@@ -845,8 +853,8 @@ Testing
 So, based on the above, we tested performance of splitting a single 100k
 row table into a 100 1k tables.
 
-Test 1: “CREATE TABLE SELECT FROM WHERE” approach
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Test 1: ``CREATE TABLE SELECT FROM WHERE`` approach
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The simplest approach is to run in the loop
 
@@ -1016,7 +1024,7 @@ Test two: determining cost of dealing with many small tables
 ------------------------------------------------------------
 
 We divided 1 million rows across 100 small tables (10K rows per table).
-It took 1.10 sec to run the “SELECT SUM” query sequentially for all 100
+It took 1.10 sec to run the ``SELECT SUM`` query sequentially for all 100
 tables, so the overhead of dealing with 100 smaller tables instead of
 one bigger is negligible.
 
@@ -1039,8 +1047,8 @@ The test included creating one in-memory table, then for each chunk:
       TRUNCATE memT
 
 It took 35.80 sec, and comparing with the “baseline” numbers (queries B
-and C) it was about 24 sec slower. Conclusion: “WHERE subChunkId”
-introduced 24 sec delay. With no chunking, our SELECT query would
+and C) it was about 24 sec slower. Conclusion: ``WHERE subChunkId``
+introduced 24 sec delay. With no chunking, our ``SELECT`` query would
 complete in ~1 sec, so the overall overhead is ~x36
 
 Re-clustering the data based on the subChunkId index by doing:
@@ -1053,15 +1061,16 @@ has minimal effect on the total execution cost. The likely reason is
 that the table used for the test easily fits in memory and it is not
 fetched from disk.
 
-Doing the same test but with “SELECT \*” instead of
-“SUM(bMag+rMag+b2Mag+r2Mag)” took 98.15 sec. Since the baseline query A
+Doing the same test but with ``SELECT *`` instead of
+``SUM(bMag+rMag+b2Mag+r2Mag)`` took 98.15 sec. Since the baseline query A
 took ~83 sec, in this case the overhead was only ~15 sec (18%).
 
 Test four: using “skinny” subChunkIds
 -------------------------------------
 
-The test included creating one in-memory table *CREATE TEMPORARY TABLE
-memT (magSums FLOAT, objectId BIGINT)*, then for each chunk:
+The test included creating one in-memory table
+``CREATE TEMPORARY TABLE memT (magSums FLOAT, objectId BIGINT)``,
+then for each chunk:
 
 .. code:: sql
 
@@ -1078,7 +1087,7 @@ Test five: sub-partitioning in a client program
 -----------------------------------------------
 
 We tried building sub-partitions through a client program (python). The
-code was looping through rows returned from 'SELECT \* FROM XX', and for
+code was looping through rows returned from ``SELECT * FROM XX``, and for
 each row it
 
 -  parsed the row
@@ -1232,41 +1241,41 @@ We added an “id” auto-increment field as a primary key.
 
 The corresponding table:
 
-+----------+------------+------+-----+---------+----------------+
-| Field    | Type       | Null | Key | Default | Extra          |
-+----------+------------+------+-----+---------+----------------+
-| id       | bigint(20) | NO   | PRI | NULL    | auto_increment |
-+----------+------------+------+-----+---------+----------------+
-| ra       | float      | YES  |     | NULL    |                |
-+----------+------------+------+-----+---------+----------------+
-| decl     | float      | YES  |     | NULL    |                |
-+----------+------------+------+-----+---------+----------------+
-| pmra     | int(11)    | YES  |     | NULL    |                |
-+----------+------------+------+-----+---------+----------------+
-| pmraerr  | int(11)    | YES  |     | NULL    |                |
-+----------+------------+------+-----+---------+----------------+
-| pmdec    | int(11)    | YES  |     | NULL    |                |
-+----------+------------+------+-----+---------+----------------+
-| pmdecerr | int(11)    | YES  |     | NULL    |                |
-+----------+------------+------+-----+---------+----------------+
-| epoch    | float      | YES  |     | NULL    |                |
-+----------+------------+------+-----+---------+----------------+
-| bmag     | float      | YES  | MUL | NULL    |                |
-+----------+------------+------+-----+---------+----------------+
-| bmagf    | int(11)    | YES  |     | NULL    |                |
-+----------+------------+------+-----+---------+----------------+
-| rmag     | float      | YES  |     | NULL    |                |
-+----------+------------+------+-----+---------+----------------+
-| rmagf    | int(11)    | YES  |     | NULL    |                |
-+----------+------------+------+-----+---------+----------------+
-| bmag2    | float      | YES  |     | NULL    |                |
-+----------+------------+------+-----+---------+----------------+
-| bmagf2   | int(11)    | YES  |     | NULL    |                |
-+----------+------------+------+-----+---------+----------------+
-| rmag2    | float      | YES  |     | NULL    |                |
-+----------+------------+------+-----+---------+----------------+
-| rmag2f   | int(11)    | YES  |     | NULL    |                |
-+----------+------------+------+-----+---------+----------------+
++--------------+----------------+----------+---------+-------------+--------------------+
+| **Field**    | **Type**       | **Null** | **Key** | **Default** | **Extra**          |
++==============+================+==========+=========+=============+====================+
+| id           | bigint(20)     | NO       | PRI     | NULL        | auto_increment     |
++--------------+----------------+----------+---------+-------------+--------------------+
+| ra           | float          | YES      |         | NULL        |                    |
++--------------+----------------+----------+---------+-------------+--------------------+
+| decl         | float          | YES      |         | NULL        |                    |
++--------------+----------------+----------+---------+-------------+--------------------+
+| pmra         | int(11)        | YES      |         | NULL        |                    |
++--------------+----------------+----------+---------+-------------+--------------------+
+| pmraerr      | int(11)        | YES      |         | NULL        |                    |
++--------------+----------------+----------+---------+-------------+--------------------+
+| pmdec        | int(11)        | YES      |         | NULL        |                    |
++--------------+----------------+----------+---------+-------------+--------------------+
+| pmdecerr     | int(11)        | YES      |         | NULL        |                    |
++--------------+----------------+----------+---------+-------------+--------------------+
+| epoch        | float          | YES      |         | NULL        |                    |
++--------------+----------------+----------+---------+-------------+--------------------+
+| bmag         | float          | YES      | MUL     | NULL        |                    |
++--------------+----------------+----------+---------+-------------+--------------------+
+| bmagf        | int(11)        | YES      |         | NULL        |                    |
++--------------+----------------+----------+---------+-------------+--------------------+
+| rmag         | float          | YES      |         | NULL        |                    |
++--------------+----------------+----------+---------+-------------+--------------------+
+| rmagf        | int(11)        | YES      |         | NULL        |                    |
++--------------+----------------+----------+---------+-------------+--------------------+
+| bmag2        | float          | YES      |         | NULL        |                    |
++--------------+----------------+----------+---------+-------------+--------------------+
+| bmagf2       | int(11)        | YES      |         | NULL        |                    |
++--------------+----------------+----------+---------+-------------+--------------------+
+| rmag2        | float          | YES      |         | NULL        |                    |
++--------------+----------------+----------+---------+-------------+--------------------+
+| rmag2f       | int(11)        | YES      |         | NULL        |                    |
++--------------+----------------+----------+---------+-------------+--------------------+
 
 Relevance to real data
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -1278,17 +1287,17 @@ point columns is the same as what we will be expecting in LSST. For
 reference, here are the type distributions of columns for the LSST
 Object table.
 
-+----------+--------+----------------+
-| type     | DC3a   | DC3b (estim)   |
-+----------+--------+----------------+
-| FLOAT    | 30     | 142            |
-+----------+--------+----------------+
-| DOUBLE   | 14     | 42             |
-+----------+--------+----------------+
-| other    | 15     | 21             |
-+----------+--------+----------------+
-| total    | 59     | 205            |
-+----------+--------+----------------+
++--------------+------------+--------------------+
+| **type**     | **DC3a**   | **DC3b (estim)**   |
++==============+============+====================+
+| FLOAT        | 30         | 142                |
++--------------+------------+--------------------+
+| DOUBLE       | 14         | 42                 |
++--------------+------------+--------------------+
+| other        | 15         | 21                 |
++--------------+------------+--------------------+
+| total        | 59         | 205                |
++--------------+------------+--------------------+
 
 DC3a is about 3/4 floating-point, and the current DC3b estimate is about
 90% floating point.
@@ -1311,7 +1320,7 @@ Test Queries
 
 q1: Retrieve one entire row
 
-::
+.. code:: sql
 
     SELECT *
     FROM  %s
@@ -1319,7 +1328,7 @@ q1: Retrieve one entire row
 
 q2: Retrieve about 10% of rows
 
-::
+.. code:: sql
 
     SELECT  *
     FROM    %s
@@ -1327,7 +1336,7 @@ q2: Retrieve about 10% of rows
 
 q1b: Retrieve bmag from one row
 
-::
+.. code:: sql
 
     SELECT bmag
     FROM  %s
@@ -1335,7 +1344,7 @@ q1b: Retrieve bmag from one row
 
 q2b: Retrieve bmag from about 10% of rows
 
-::
+.. code:: sql
 
     SELECT  bmag
     FROM    %s
@@ -1346,52 +1355,52 @@ Numbers
 
 Bulk Performance for 100 million rows: Times in seconds
 
-+-----------------+-----------+----------+
-|                 | w/o idx   | w/ idx   |
-+-----------------+-----------+----------+
-| myisampack      | 1418      | 1387     |
-+-----------------+-----------+----------+
-| Pack-repair     | 374       | 3200     |
-+-----------------+-----------+----------+
-| Unpack          | 412       | 2959     |
-+-----------------+-----------+----------+
-| Unpack-repair   | 102       | 2689     |
-+-----------------+-----------+----------+
-| Total pack      | 1792      | 4587     |
-+-----------------+-----------+----------+
++-----------------+---------------+--------------+
+|                 | **w/o idx**   | **w/ idx**   |
++=================+===============+==============+
+| myisampack      | 1418          | 1387         |
++-----------------+---------------+--------------+
+| Pack-repair     | 374           | 3200         |
++-----------------+---------------+--------------+
+| Unpack          | 412           | 2959         |
++-----------------+---------------+--------------+
+| Unpack-repair   | 102           | 2689         |
++-----------------+---------------+--------------+
+| Total pack      | 1792          | 4587         |
++-----------------+---------------+--------------+
 
 Truncated table (7/8 float)
 
-+---------------------+-----------+----------+
-|                     | w/o idx   | w/ idx   |
-+---------------------+-----------+----------+
-| myisampack          | 806       | 822      |
-+---------------------+-----------+----------+
-| Pack-repair         | 231       | 2567     |
-+---------------------+-----------+----------+
-| Unpack              |           | 2414     |
-+---------------------+-----------+----------+
-| Unpack-repair       |           | 2194     |
-+---------------------+-----------+----------+
-| Total pack          |           | 3389     |
-+---------------------+-----------+----------+
-| Total pack row/s    | 9.64e4    | 2.95e4   |
-+---------------------+-----------+----------+
-| Total pack byte/s   | 3.57e6    | 1.72e6   |
-+---------------------+-----------+----------+
++---------------------+---------------+--------------+
+|                     | **w/o idx**   | **w/ idx**   |
++=====================+===============+==============+
+| myisampack          | 806           | 822          |
++---------------------+---------------+--------------+
+| Pack-repair         | 231           | 2567         |
++---------------------+---------------+--------------+
+| Unpack              |               | 2414         |
++---------------------+---------------+--------------+
+| Unpack-repair       |               | 2194         |
++---------------------+---------------+--------------+
+| Total pack          |               | 3389         |
++---------------------+---------------+--------------+
+| Total pack row/s    | 9.64e4        | 2.95e4       |
++---------------------+---------------+--------------+
+| Total pack byte/s   | 3.57e6        | 1.72e6       |
++---------------------+---------------+--------------+
 
 Sizes:
 ^^^^^^
 
-+----------------+---------+---------+----------------+----------------+
-|                | Table   | Index   | Table(trunc)   | Index(trunc)   |
-+----------------+---------+---------+----------------+----------------+
-| Uncompressed   | 7000M   | 1442M   | 3700M          | 2140M          |
-+----------------+---------+---------+----------------+----------------+
-| Compressed     | 2001M   | 2142M   | 1703M          | 2140M          |
-+----------------+---------+---------+----------------+----------------+
++----------------+-------------+-------------+--------------------+--------------------+
+|                | **Table**   | **Index**   | **Table(trunc)**   | **Index(trunc)**   |
++================+=============+=============+====================+====================+
+| Uncompressed   | 7000M       | 1442M       | 3700M              | 2140M              |
++----------------+-------------+-------------+--------------------+--------------------+
+| Compressed     | 2001M       | 2142M       | 1703M              | 2140M              |
++----------------+-------------+-------------+--------------------+--------------------+
 
-(in 1M = 10\*\*6)
+(in 1M = 10\ :sup:`6`\ )
 
 Table size is reduced to 29% of original (49% if indexes are included).
 The truncated table compresses somewhat less: 46% of original (66% if
@@ -1407,7 +1416,7 @@ Test 1:
 |               | uncompressed   |               | packed   |               |
 +---------------+----------------+---------------+----------+---------------+
 |               | No idx         | Id/bmag idx   | No idx   | Id/bmag idx   |
-+---------------+----------------+---------------+----------+---------------+
++===============+================+===============+==========+===============+
 | q1: sel row   | 63.8           | 0.15          | 237      | 0.11          |
 +---------------+----------------+---------------+----------+---------------+
 | q2: filter    | 304.9          | 303.8         | 327.2    | 307.5         |
@@ -1421,7 +1430,7 @@ Test 2:
 |       | packed   |               | Unpacked   |               |
 +-------+----------+---------------+------------+---------------+
 |       | no idx   | id/bmag idx   | no idx     | id/bmag idx   |
-+-------+----------+---------------+------------+---------------+
++=======+==========+===============+============+===============+
 | q1    | 270.16   | 0.07          | 192.54     | 0.05          |
 +-------+----------+---------------+------------+---------------+
 | q2    | 290.35   | 307.2         | 407.29     | 309.06        |
@@ -1437,7 +1446,7 @@ Additional runs:
 | Unpacked   |               | Unpacked (w/flush)   |               | Unpacked (flush+restart)   |               |
 +------------+---------------+----------------------+---------------+----------------------------+---------------+
 | no idx     | id/bmag idx   | no idx               | id/bmag idx   | no idx                     | id/bmag idx   |
-+------------+---------------+----------------------+---------------+----------------------------+---------------+
++============+===============+======================+===============+============================+===============+
 | 192.36     | 0.06          | 143.23               | 0.04          | 97.96                      | 0.05          |
 +------------+---------------+----------------------+---------------+----------------------------+---------------+
 | 407.24     | 255.23        | 272.96               | 255.82        | 265.14                     | 283.37        |
@@ -1451,7 +1460,7 @@ Relative times: (packed/unpacked time, test 2)
 
 +-------+------------+---------+
 |       | No index   | Index   |
-+-------+------------+---------+
++=======+============+=========+
 | q1    | 1.4        | 1.46    |
 +-------+------------+---------+
 | q2    | 0.71       | 0.99    |
@@ -1474,7 +1483,7 @@ Unpacked:
 
 +-------+-----------------+----------+----------+------------+---------+----------+
 |       | Id/bmag index   |          |          | No index   |         |          |
-+-------+-----------------+----------+----------+------------+---------+----------+
++=======+=================+==========+==========+============+=========+==========+
 |       | 1               | 2        | 3        | 1          | 2       | 3        |
 +-------+-----------------+----------+----------+------------+---------+----------+
 | q1    | 0.05            | 0.04     | 0.04     | 56.31      | 38.53   | 38.53    |
@@ -1490,7 +1499,7 @@ Packed:
 
 +-------+-----------------+----------+----------+------------+----------+----------+
 |       | Id/bmag index   |          |          | No index   |          |          |
-+-------+-----------------+----------+----------+------------+----------+----------+
++=======+=================+==========+==========+============+==========+==========+
 |       | 1               | 2        | 3        | 1          | 2        | 3        |
 +-------+-----------------+----------+----------+------------+----------+----------+
 | q1    | 0.09            | 0.05     | 0.05     | 178.87     | 135.3    | 135.22   |
@@ -1506,7 +1515,7 @@ Avg (2nd/3rd runs) compression penalty:
 
 +-------+---------------+----------+
 |       | id/bmag idx   | no idx   |
-+-------+---------------+----------+
++=======+===============+==========+
 | q1    | 0.05          | 0.72     |
 +-------+---------------+----------+
 | q2    | 0.33          | 0.33     |
@@ -1522,7 +1531,7 @@ Error calculations:
 |       | avg perf packed   |          | avg perf unpacked   |          | rms error packed   |          | rms error unpacked   |          |
 +-------+-------------------+----------+---------------------+----------+--------------------+----------+----------------------+----------+
 |       | id/bmag idx       | no idx   | id/bmag idx         | no idx   | id/bmag idx        | no idx   | id/bmag idx          | no idx   |
-+-------+-------------------+----------+---------------------+----------+--------------------+----------+----------------------+----------+
++=======+===================+==========+=====================+==========+====================+==========+======================+==========+
 | q1    | 0.05              | 135.26   | 0.04                | 38.53    | 0                  | 0.04     | 0                    | 0        |
 +-------+-------------------+----------+---------------------+----------+--------------------+----------+----------------------+----------+
 | q2    | 307.3             | 307.61   | 207.1               | 206.13   | 0.16               | 0.08     | 0.25                 | 0.07     |
@@ -1604,7 +1613,7 @@ Take-home messages (“conclusions”)
 Storing Reference Catalog\ [*]_
 ===============================
 
-Assumptions (based on DataAccWG telecon discussions Oct 23, Oct 6, Oct
+Assumptions (based on DataAccWG telecon discussions 2009 Oct 23, Oct 6, Oct
 2):
 
 -  data will come from several sources (USNO-B, simCat, maybe SDSS,
@@ -1655,7 +1664,7 @@ option seems to be:
 
 SDQA Catalogs: - want bright stars: need to apply filter on magnitude -
 want isolated stars: need to identify object without near neighbors -
-see `LSST Trac <https://dev.lsstcorp.org/trac/wiki/SdqaWcsFailureCheckStage>`_ for more details
+see `this page <https://dev.lsstcorp.org/trac/wiki/SdqaWcsFailureCheckStage>`_ for more details
 
 The former is easy. The latter will require some thinking. It is a
 one-time operation, and we are talking about few million rows (1% of 1
@@ -2222,7 +2231,7 @@ listed.
 
 +------------------------+----------------+----------------+----------------------+
 | **Test**               | **FOV**        | **Row Size**   | **Time - 1st run**   |
-+------------------------+----------------+----------------+----------------------+
++========================+================+================+======================+
 | Load test              | High density   | Skinny         | 1m1.231s             |
 +------------------------+----------------+----------------+----------------------+
 |                        |                | Fat            | 5m4.386s             |
@@ -2328,7 +2337,7 @@ listed.
 
 +------------------------+----------------+----------------+----------------------+
 | **Test**               | **FOV**        | **Row Size**   | **Time - 1st run**   |
-+------------------------+----------------+----------------+----------------------+
++========================+================+================+======================+
 | Load test              | High density   | Skinny         | 0m36.023s            |
 +------------------------+----------------+----------------+----------------------+
 |                        |                | Fat            | 4m52.873s            |
@@ -2393,8 +2402,8 @@ Below, elapsed times for multiple runs of every test performed are
 listed.
 
 +------------------------+----------------+----------------+------------------------+
-| **Test**               | **FOV**        | **Row Size**   | **Time - 1^st^ run**   |
-+------------------------+----------------+----------------+------------------------+
+| **Test**               | **FOV**        | **Row Size**   | **Time - 1st run**     |
++========================+================+================+========================+
 | Load test              | High density   | Skinny         | 0m42.217s              |
 +------------------------+----------------+----------------+------------------------+
 |                        |                | Fat            | 4m50.362s              |
@@ -2444,8 +2453,8 @@ A single in-memory table of *objects* matched against a single in-memory
 table of *DIA sources* (and vice versa) :
 
 +----------------+----------------+-------------------+-------------------------------+----------------------+----------------------+----------------------+
-| **FOV**        | **Row size**   | **match-width**   | **match direction**           | **Time - 1st run**   | **Time - 3nd run**   | **Time - 3rd run**   |
-+----------------+----------------+-------------------+-------------------------------+----------------------+----------------------+----------------------+
+| **FOV**        | **Row size**   | **match-width**   | **match direction**           | **Time - 1st run**   | **Time - 2nd run**   | **Time - 3rd run**   |
++================+================+===================+===============================+======================+======================+======================+
 | High density   | Skinny         | slim              | *objects* vs. *DIA sources*   | 0m51.989s            | 0m52.081s            | 0m52.169s            |
 +----------------+----------------+-------------------+-------------------------------+----------------------+----------------------+----------------------+
 |                |                |                   | *DIA sources* vs. *objects*   | 0m35.692s            | 0m35.371s            | 0m35.442s            |
@@ -2500,8 +2509,8 @@ time (for stripes overlapping the FOV) yielding 11 units of work that
 are currently executed in serial fashion, but could be run in parallel.
 
 +----------------+----------------+-------------------+-------------------------------+----------------------+----------------------+
-| **FOV**        | **Row size**   | **match-width**   | **match direction**           | **Time - 1st run**   | **Time - 3nd run**   |
-+----------------+----------------+-------------------+-------------------------------+----------------------+----------------------+
+| **FOV**        | **Row size**   | **match-width**   | **match direction**           | **Time - 1st run**   | **Time - 2nd run**   |
++================+================+===================+===============================+======================+======================+
 | High density   | Skinny         | slim              | *objects* vs. *DIA sources*   | 1m20.287s            | 1m20.58s             |
 +----------------+----------------+-------------------+-------------------------------+----------------------+----------------------+
 |                |                |                   | *DIA sources* vs. *objects*   | 0m56.065s            | 0m56.5s              |
@@ -2567,7 +2576,7 @@ range lookups.
 
 +----------------+----------------+-------------------+-------------------------------+------------+
 | **FOV**        | **Row size**   | **match-width**   | **match direction**           | **Time**   |
-+----------------+----------------+-------------------+-------------------------------+------------+
++================+================+===================+===============================+============+
 | High density   | Skinny         | slim              | *objects* vs. *DIA sources*   | 0m54s      |
 +----------------+----------------+-------------------+-------------------------------+------------+
 |                |                |                   | *DIA sources* vs. *objects*   | 0m36s      |
@@ -2582,7 +2591,7 @@ range lookups.
 
 +----------------+----------------+-------------------+-------------------------------+-------------+
 | **FOV**        | **Row size**   | **match-width**   | **match direction**           | **Time**    |
-+----------------+----------------+-------------------+-------------------------------+-------------+
++================+================+===================+===============================+=============+
 | High density   | Skinny         | slim              | *objects* vs. *DIA sources*   | 0m51.203s   |
 +----------------+----------------+-------------------+-------------------------------+-------------+
 |                |                |                   | *DIA sources* vs. *objects*   | 0m34.112s   |
@@ -2597,7 +2606,7 @@ range lookups.
 
 +----------------+----------------+-------------------+-------------------------------+-------------+
 | **FOV**        | **Row size**   | **match-width**   | **match direction**           | **Time**    |
-+----------------+----------------+-------------------+-------------------------------+-------------+
++================+================+===================+===============================+=============+
 | High density   | Skinny         | slim              | *objects* vs. *DIA sources*   | 0m50.535s   |
 +----------------+----------------+-------------------+-------------------------------+-------------+
 |                |                |                   | *DIA sources* vs. *objects*   | 0m33.615s   |
@@ -2612,7 +2621,7 @@ range lookups.
 
 +----------------+----------------+-------------------+-------------------------------+-------------+
 | **FOV**        | **Row size**   | **match-width**   | **match direction**           | **Time**    |
-+----------------+----------------+-------------------+-------------------------------+-------------+
++================+================+===================+===============================+=============+
 | High density   | Skinny         | slim              | *objects* vs. *DIA sources*   | 0m54.990s   |
 +----------------+----------------+-------------------+-------------------------------+-------------+
 |                |                |                   | *DIA sources* vs. *objects*   | 0m35.113s   |
@@ -2627,7 +2636,7 @@ range lookups.
 
 +----------------+----------------+-------------------+-------------------------------+--------------+
 | **FOV**        | **Row size**   | **match-width**   | **match direction**           | **Time**     |
-+----------------+----------------+-------------------+-------------------------------+--------------+
++================+================+===================+===============================+==============+
 | High density   | Skinny         | slim              | *objects* vs. *DIA sources*   | 11m18.951s   |
 +----------------+----------------+-------------------+-------------------------------+--------------+
 |                |                |                   | *DIA sources* vs. *objects*   | 8m25.763s    |
@@ -2669,7 +2678,7 @@ delay introduced between them. Results:
 
 +----------------------+-----------+------------------------------+---------------+
 | queries per thread   | threads   | slowest elapsed time [sec]   | queries/sec   |
-+----------------------+-----------+------------------------------+---------------+
++======================+===========+==============================+===============+
 | 10,000               | 1         | 466.2                        | 21.5          |
 +----------------------+-----------+------------------------------+---------------+
 | 5,000                | 2         | 247.7                        | 20.2          |
@@ -2699,7 +2708,7 @@ comparable to the single-node test:
 
 +----------------------+-------------------+------------------------------+---------------+
 | queries per thread   | threads           | slowest elapsed time [sec]   | queries/sec   |
-+----------------------+-------------------+------------------------------+---------------+
++======================+===================+==============================+===============+
 | 100                  | 50 x 2 machines   | 109.0                        | 0.9           |
 +----------------------+-------------------+------------------------------+---------------+
 
@@ -2742,11 +2751,9 @@ References
   :encoding: latex+latin
   :style: lsst_aa
 
-.. note::
-
-  This document was originally published as a part of :cite:`Document-11625` and then part of :cite:`LDM-135`.
-
 .. _XRootD: http://xrootd.org
+
+.. _LSST Trac: https://dev.lsstcorp.org/trac/wiki
 
 .. [*] It is worth noting that in real production we do not anticipate
    to manage billion+ rows in a *single physical table* - the Qserv system
