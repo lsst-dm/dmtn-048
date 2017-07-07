@@ -123,7 +123,7 @@ sub-partitioned. The tests involved comparing in-memory with
 disk-based tables. We also tested the influence of introducing
 “skinny” tables, as well as running sub-partitioning in a client C++
 program, and inside a stored procedure. These tests are described at
-https://dev.lsstcorp.org/trac/wiki/db/SubPartOverhead. The on-the-fly
+:ref:`below <sub-partitioning-overhead-trac>`. The on-the-fly
 overhead was measured to be 18% for ``select *`` queries, but
 3600% if only one column (the skinniest selection) was needed.
 
@@ -933,6 +933,205 @@ costs us 7 min (near neighbor on 8 cores would finish in 50 min).
 Each near-neighbor job does only one read access to the mysql metadata,
 so the contention on mysql metadata should not be a problem.
 
+.. _sub-partitioning-overhead-trac:
+
+Sub-partitioning overhead [*]_
+==============================
+
+Introduction
+------------
+
+As discussed in :cite:`Document-26276`,
+it might be handy to be able to split a large chunk of a table on the
+fly into smaller sub-zones and sub-chunks.
+
+To determine the overheads associated with this, we run some tests on a
+1 million row table which in this case represented a reasonably sized
+chunk of a multi-billion row table. The used table had significantly
+less columns than the real Object table (72 bytes per row vs expected
+2.5K). The test was run directly on the database server. Preparing for
+the test involved
+
+1. Created a 1-million row table
+2. Precalculated 10 subZoneIds such that each zone had the same
+   (or almost the same) number of rows
+3. Precalculated 100 subChunkIds (10 per zone) such that each chunk had the
+   same (or almost the same) number of rows
+4. Created an index on subChunkId. The index selectivity is 1%.
+
+Conclusions
+-----------
+
+For ``SELECT *`` type queries, the measured overhead was ~18%. It will
+likely be even lower for our wide tables (Object table has 300 columns)
+
+For ``SELECT`` the measured overhead was ~3600% (x36). However
+
+-  if we use shared scans, this cost will be amortized over multiple
+   queries. Also, it is very unlikely all queries using a shared scan
+   will select one column
+-  If it is a non-shared-scan query: we can put into subchunk tables
+   only these columns that the query needs plus the primary key.
+
+So in practice, the overhead of building sub-partitions seems
+acceptable.
+
+See below how we determined all this.
+
+Test one: determining cost of full table scan
+---------------------------------------------
+
+First, to determine the “baseline” (how long it takes to run various
+queries that involve a single full table scan) we run the following 4
+queries
+
+.. code:: sql
+
+     SELECT * FROM XX                                               -- A
+     INSERT INTO memR SELECT * FROM XX                              -- B
+     SELECT SUM(bMag+rMag+b2Mag+r2Mag) FROM XX                      -- C
+     INSERT INTO memRSum SELECT SUM(bMag+rMag+b2Mag+r2Mag) FROM XX  -- D
+
+Queries A and C represent the cost of querying the data, query B
+represents the minimum cost to build sub-chunks, and query D helps to
+determine the cost of sending the results to the client.
+
+*memR* and *memRSum* tables are both in-memory.
+
+After running them, we rerun them again to check the effect of potential
+caching. The timing for the first set was: 82.27, 10.32, 1.09, 1.06. The
+timing for the second set was almost the same: 81.86, 10.48, 1.04, 1.06,
+so it looks like caching doesn't distort the results.
+
+The table + indexes used for these tests = ~100MB in size, and they
+easily fit into 16GB of RAM we had available. We did not clean up the OS
+cache between tests, so it is fair to assume we are skipping ~2 sec
+which would be used to fetch the data from disk (which can do 55MB/sec)
+
+Observations: it is expensive to format the results (cost of query B
+minus cost of query D = ~9 sec). It is even more expensive to send the
+results to the client application (cost of query A minus cost of query B
+= ~71 sec)
+
+Test two: determining cost of dealing with many small tables
+------------------------------------------------------------
+
+We divided 1 million rows across 100 small tables (10K rows per table).
+It took 1.10 sec to run the “SELECT SUM” query sequentially for all 100
+tables, so the overhead of dealing with 100 smaller tables instead of
+one bigger is negligible.
+
+A similar test with 1000 small tables (1K rows each) took 1.98 sec to
+run. Here, the overhead was visibly bigger (close to x2), but it is
+still acceptable.
+
+Observation: the overhead of reading from many smaller tables instead of
+1 big table is acceptable.
+
+Test three: using subChunkIds
+-----------------------------
+
+The test included creating one in-memory table, then for each chunk:
+
+.. code:: sql
+
+      INSERT INTO memT SELECT * FROM XX WHERE subChunkId = <id>
+      SELECT SUM(bMag+rMag+b2Mag+r2Mag) FROM memT
+      TRUNCATE memT
+
+It took 35.80 sec, and comparing with the “baseline” numbers (queries B
+and C) it was about 24 sec slower. Conclusion: “WHERE subChunkId”
+introduced 24 sec delay. With no chunking, our SELECT query would
+complete in ~1 sec, so the overall overhead is ~x36
+
+Re-clustering the data based on the subChunkId index by doing:
+
+.. code:: sql
+
+    myisamchk <baseDir>/subChunk/XX.MYI --sort-record=3
+
+has minimal effect on the total execution cost. The likely reason is
+that the table used for the test easily fits in memory and it is not
+fetched from disk.
+
+Doing the same test but with “SELECT \*” instead of
+“SUM(bMag+rMag+b2Mag+r2Mag)” took 98.15 sec. Since the baseline query A
+took ~83 sec, in this case the overhead was only ~15 sec (18%).
+
+Test four: using “skinny” subChunkIds
+-------------------------------------
+
+The test included creating one in-memory table *CREATE TEMPORARY TABLE
+memT (magSums FLOAT, objectId BIGINT)*, then for each chunk:
+
+.. code:: sql
+
+      INSERT INTO memT SELECT bMag+rMag+b2Mag+r2Mag, objectId FROM XX WHERE subChunkId = <id>
+      SELECT SUM(magSums) FROM memT
+      TRUNCATE memT
+
+Essentially instead of blindly copying all columns to subchunks, we are
+coping only the minimum that is needed (including objectId which will
+always be needed for self-join queries). In this case, the test too
+11.39 sec which is over 3x improvement comparing to the previous test.
+
+Test five: sub-partitioning in a client program
+-----------------------------------------------
+
+We tried building sub-partitions through a client program (python). The
+code was looping through rows returned from 'SELECT \* FROM XX', and for
+each row it
+
+-  parsed the row
+-  checked subChunkId
+-  appended it to appropriate ``INSERT INTO chunk\_ VALUES (...), (...)``
+   command
+
+then it run the 'insert' commands.
+
+Doing ``SELECT * FROM <table>``
+takes 81 seconds, which is aligned with our baseline numbers (query A).
+Then remaining processing took 533 sec. It could probably be optimized a
+little, but it is not worth it, it is clear this is not the way to go.
+
+Test six: stored procedure
+--------------------------
+
+Finally, we tried sub-partitioning through a stored procedure. Actually,
+not the whole sub-partitioning, but just the scanning. The following
+stored procedure was used:
+
+.. code:: sql
+
+    CREATE PROCEDURE subPart()
+    BEGIN
+
+      DECLARE objId BIGINT;
+      DECLARE ra, decl DOUBLE;
+      DECLARE muRA, muRAERr, muDecl, muDeclErr, epoch, bMag, bFlag,
+              rMag, rFlag, b2Mag, b2Flag, r2Mag, r2Flag FLOAT;
+      DECLARE subZoneId, subChunkId SMALLINT;
+
+      DECLARE c CURSOR FOR SELECT * FROM XX;
+
+      OPEN c;
+
+      CURSOR_LOOP: LOOP
+        FETCH C INTO objId, ra, decl, muRA, muRAERr, muDecl, muDeclErr, epoch, bMag, bFlag,
+                     rMag, rFlag, b2Mag, b2Flag, r2Mag, r2Flag, subZoneId, subChunkId;
+
+      END LOOP;
+
+      CLOSE c;
+    END
+    //
+
+So, this procedure only scans the data, it doesn't insert rows to the
+corresponding sub-tables. It is roughly equivalent to the query B from
+the baseline test. This test took 21 seconds, almost the same as the
+corresponding baseline query B. Conclusion: pushing this computation to
+the stored procedure doesn't visibly improve the performance.
+
 
 References
 ==========
@@ -958,3 +1157,5 @@ References
 .. [*] Original location of this report: https://dev.lsstcorp.org/trac/wiki/db/SpatialJoinPerf
 
 .. [*] Original location of this 2009 report: https://dev.lsstcorp.org/trac/wiki/db/BuildSubPart
+
+.. [*] Original location of this 2009 report: https://dev.lsstcorp.org/trac/wiki/db/SubPartOverhead
