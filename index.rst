@@ -104,8 +104,8 @@ we determined we need a second level of partitioning, which we call
 - segregating data into sub-partitions in a client C++ program,
   including using a binary protocol.
 
-We timed these tests. This test is described at
-https://dev.lsstcorp.org/trac/wiki/db/BuildSubPart. These tests showed
+We timed these tests. This test is described :ref:`below <building-sub-partitions-trac>`.
+These tests showed
 that it was fastest to build the on-the-fly sub-partitions using SQL in
 the engine, rather than performing the task externally and loading the
 sub-partitions back into the engine.
@@ -534,7 +534,7 @@ would prevent us from running multiple instances on a single machine.
 Spatial Join Performance
 ========================
 
-This page describes performance of spatial join queries as of early 2010.\ [*]_
+This section describes performance of spatial join queries as of early 2010.\ [*]_
 
 In practice, we expect spatial joins on Object table only. To avoid the
 join on multi-billion row table, the table will be partitioned
@@ -800,6 +800,139 @@ Each query run on a single partition. Results:
 
 See `200909nearNeigh-lsst10.xls </_static/200909nearNeigh-lsst10.xls>`__ for details.
 
+.. _building-sub-partitions-trac:
+
+Building sub-partitions
+=======================
+
+We tested cost of building sub partitions on the fly.\ [*]_ This task involves
+taking a large partition and segregating rows into different tables,
+such that all rows with a given subChunkId end up in the same table.
+
+Numbers for DC3b
+----------------
+
+In DC3b we will have ~150 million rows in the Object table.
+
+A reasonable partitioning/sub-partitioning scheme:
+
+-  1,500 partitions, 100K rows per partition.
+-  a partition dynamically split into 100 sub-partitions 1K row each.
+
+Justification
+~~~~~~~~~~~~~
+
+-  we want to keep the number of partitions <30K. Each partition = table
+   = 3 files. 200K partitions would = 2GB of internal structure to be
+   managed by xrootd (in memory).
+-  we want relatively small sub-partitions (<2K rows) in order for near
+   neighbor query to run fast, see the :ref:`analysis above <spatial-join-performance-trac>`.
+-  sub-partitions can't be too small because the overlap will start
+   playing big role, eg overlap over ~20% starts to become unacceptable.
+
+Object density will not vary too much, and will be ~ 5e5 / deg^2, or 140
+objects / sqArcmin. (star:galaxy ratio will vary, but once we add both
+together it wont because the regions that have very high star densities
+also have very high extinction, so that background galaxies are very
+difficult to detect)
+
+So a 1K-row subpartition will roughly cover 3x3 sq arcmin. Given SDSS
+precalculated neighbors for 0.5 arcmin distance, this looks reasonable
+(eg, the overlap is ~ 17% for the largest distance searched.)
+
+Testing
+-------
+
+So, based on the above, we tested performance of splitting a single 100k
+row table into a 100 1k tables.
+
+Test 1: “CREATE TABLE SELECT FROM WHERE” approach
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The simplest approach is to run in the loop
+
+.. code:: sql
+
+  CREATE TABLE sp_xxx ENGINE=MEMORY SELECT * FROM XX100k where subChunkId=xxx;
+
+for each sub chunk, where xxx is a subChunkId.
+
+Timing: ~ 1.5 sec
+
+Test 2: Segregating in a client program (ascii)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Second, we created a C++ program that does the following:
+
+-  ``SELECT * from XX100k`` (reads the whole 100k row partition into
+   memory)
+-  segregate in memory rows based on subChunkId value
+-  buffer them (a buffer per subChunkId)
+-  flush each buffer to a table using ``INSERT INTO sp_xxx VALUES
+   (1,2,3), (4,3,4), ..., (3,4,5)``
+
+Note that the values are sent from mysqld to the client as ascii, and
+sent back from the client back to the server as ascii too.
+
+The client job was run on the same machine where the mysqld run.
+
+Timing: ~3x longer than the first test. Only ~2-3% of the total elapsed
+time was spent in the client code, the rest was waiting for mysqld, so
+optimizing the client code won't help.
+
+In summary, it is worse than the first test.
+
+Test 3: Segregating in a client (binary protocol)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+We run a test similar to the previous one, but to avoid the overhead of
+converting rows to ascii we used the binary protocol. In practice,
+
+-  reading from the input table was done through a prepared statement
+-  writing to a subChunk tables was done through prepared statements
+   ``INSERT INTO x VALUES (?,?,?), (?,?,?), ..., (?,?,?)``, and values
+   were appropriately bound.
+
+Note that a prep statement had to be created for each output table
+(table names can't parameterized).
+
+Relevant code is `here </_static/binaryProtocol.zip>`__.
+
+Timing: ~2x longer than the first test. Similarly to the previous test,
+only 2-3% of time was spent in the client code.
+
+Using ``CLIENT_COMPRESS`` flag makes things ~2x worse.
+
+In summary, it is better then the previous test, but still worse than
+the first test.
+
+Note on concurrency
+-------------------
+
+So the test 1 is the fastest. It creates ~66 tables/second.
+Unfortunately, running 8 of these jobs in parallel (1 per core) on
+lsst10 takes ~8-9 sec, not 1.5 as one would expect (presumably due to
+mysql metadata contention). Writing from each core to a different
+database does not help.
+
+Timing for DC3b
+---------------
+
+Assuming we use the “test 1” approach, and assuming we can do 1
+partition in 1.5 sec (no speedup from multi-cores), it would take 37.5
+min to sub-partition the whole Object table.
+
+Based on :ref:`the analysis above <spatial-join-performance-trac>`, we can do near neighbor join on 1K
+row table in 0.16 sec, so we need 16 sec to handle 100 such tables
+(equal 1 100k row partition). If we run it in parallel on 7 cores while
+the 8th core is sub-partitioning “next” partition, a single 100k-row
+partition would (theoretically, we didn't try yet!) be done in 2.3 sec.
+That is 57 min for entire DC3b Object catalog, e.g., sub-partitioning
+costs us 7 min (near neighbor on 8 cores would finish in 50 min).
+
+Each near-neighbor job does only one read access to the mysql metadata,
+so the contention on mysql metadata should not be a problem.
+
 
 References
 ==========
@@ -823,3 +956,5 @@ References
    Qserv, as Qserv will apply them internally.
 
 .. [*] Original location of this report: https://dev.lsstcorp.org/trac/wiki/db/SpatialJoinPerf
+
+.. [*] Original location of this 2009 report: https://dev.lsstcorp.org/trac/wiki/db/BuildSubPart
