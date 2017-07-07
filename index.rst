@@ -81,7 +81,7 @@ and reordering predicates. We run these tests for all reasonable table
 sizes (using MySQL and PostgreSQL). We measured CPU and disk I/O to
 estimate impact on hardware. In addition, we re-run these tests on the
 lsst10 machine at NCSA to understand what performance we may expect
-there for DC3b. These tests are documented :ref:`below <spatial-join-performance-trac>`.
+there for DC3b :cite:`Document-9044`. These tests are documented :ref:`below <spatial-join-performance-trac>`.
 We found that
 PostgreSQL was 3.7x slower for spatial joins over a range of row counts,
 and reducing the row-count per partition to less than 5k rows was
@@ -295,9 +295,9 @@ Data Challenge Related Tests
 ----------------------------
 
 During each data challenge we test some aspects of database performance
-and/or scalability. In DC1 we demonstrated ingest into database at the
-level of 10% of DR1, in DC2 we demonstrated near-real-time object
-association, DC3 is demonstrating catalog construction and DC4 will
+and/or scalability. In DC1 :cite:`Document-9541` we demonstrated ingest into database at the
+level of 10% of DR1, in DC2 :cite:`Document-5356` we demonstrated near-real-time object
+association, DC3 :cite:`Document-9044` is demonstrating catalog construction and DC4 will
 demonstrate the end user query/L3 data production.
 
 In addition to DC-related tests, we are running standalone tests,
@@ -1299,7 +1299,7 @@ Object table.
 | total        | 59         | 205                |
 +--------------+------------+--------------------+
 
-DC3a is about 3/4 floating-point, and the current DC3b estimate is about
+DC3a :cite:`LDM-17` is about 3/4 floating-point, and the current DC3b :cite:`Document-9044` estimate is about
 90% floating point.
 
 Removing the all the non-float/double columns from the table leaves 7
