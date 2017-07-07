@@ -2199,9 +2199,6 @@ fine chunking case where some extra machinery comes into play.
 Stripes with ra indexes: Performance Summary
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Notes
-^^^^^
-
 For the high density FOV
 
 -  3044468 objects are read into memory
@@ -2264,11 +2261,47 @@ listed.
 +------------------------+----------------+----------------+----------------------+
 |                        |                | Fat            | 1m18.091s            |
 +------------------------+----------------+----------------+----------------------+
-+------------------------+----------------+----------------+----------------------+
 
 
--  [wiki:db/DC2/StripeZoneRaPerf Performance for stripes with
-   (zoneId,ra) indexes]
+Stripes with (zoneId,ra) indexes: Performance Summary
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For the high density FOV
+
+-  3044282 objects are read into memory
+
+   -  *note: this is less than the other stripe test (which filters by
+      ra and dec rather than ra and zoneId) due to an off by one error
+      in the zone bounds I was using for the insert query. This slight
+      error doesn't warrant rerunning the test.*
+
+-  ? objects read from disk
+
+For the low density FOV
+
+-  76274 objects are read into memory
+-  ? objects read from disk
+
+For the average density FOV
+
+-  373804 objects are read into memory
+-  ? objects read from disk
+
+Currently the load test reads in the high density FOV with fat rows in
+133 minutes (many times slower than all other approaches). The test is
+completely IO bound (disk is 80-98% busy, transfer rate is between about
+800kB/s and 4MB/s with an average closer to 1MB/s, ~120 r/s sustained).
+Performance is seek limited - we could attack this problem by putting
+the indexes for each stripe on separate disks from the data, and
+furthermore by making sure adjacent stripes don't share any disk. Due to
+the extremely poor performance, full test results are omitted. Note also
+that clustering the stripe tables involved in the test took almost a
+full week (the tables involved too large for in-memory sorting).
+
+.. todo::
+
+   Setup and test scripts should be double checked for bugs.
+
 -  [wiki:db/DC2/CoarseChunkPerf Performance for coarse chunks]
 -  [wiki:db/DC2/FineChunkPerf Performance for fine chunks]
 
