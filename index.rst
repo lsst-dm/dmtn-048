@@ -349,8 +349,7 @@ a single MySQL server is able to easily handle 100-200 simultaneous
 requests in well under a second. As a result we chose to rely on MySQL
 to supply input data for forced photometry production. Running the
 production showed it was the right decision, e.g., the database
-performance did not cause any problems. The test is documented at
-https://dev.lsstcorp.org/trac/wiki/db/tests/ForcedPhoto.
+performance did not cause any problems. The test is documented :ref:`below <database-forced-photometry-trac>`.
 
 .. _winter2013-partitioning:
 
@@ -1137,9 +1136,9 @@ the stored procedure doesn't visibly improve the performance.
 MyISAM Compression Performance
 ==============================
 
-This section evaluates the compression of MyISAM tables in MySQL in
+This section\ [*]_ evaluates the compression of MyISAM tables in MySQL in
 order to better understand the benefits and consequences of using
-compression for LSST databases.\ [*]_
+compression for LSST databases.
 
 Overview
 --------
@@ -1602,8 +1601,8 @@ Take-home messages (“conclusions”)
 
 .. _storing-reference-catalog-trac:
 
-Storing Reference Catalog
-=========================
+Storing Reference Catalog\ [*]_
+===============================
 
 Assumptions (based on DataAccWG telecon discussions Oct 23, Oct 6, Oct
 2):
@@ -2016,7 +2015,7 @@ Code
 ----
 
 The code for the tests `is available
-here <_static/lsstpart.tar.gz>`__. The following files are included:
+here </_static/lsstpart.tar.gz>`__. The following files are included:
 
 +-------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | ``lsstpart/Makefile``                     | Builds ``objgen``, ``chunkgen``, and ``bustcache``                                                                                                                   |
@@ -2205,6 +2204,102 @@ fine chunking case where some extra machinery comes into play.
 
 -  [wiki:db/DC2/CrossmatchPerf Performance for cross matching]
 
+.. _database-forced-photometry-trac:
+
+Database Performance for Forced Photometry
+==========================================
+
+Tested performance of database\ [*]_ using data produced based on SDSS stripe
+82 DR8. Database location: lsst10. Test involved running different
+number of concurrent queries and measuring response time. Each query was
+selecting sources for a randomly picked bounding box, and returned
+~1200-1300 rows. Executed queries looked like:
+
+.. code:: sql
+
+    SELECT scisql_s2CPolyToBin(ra0, decl0, ra1, decl1, ra2, decl2, ra3, decl3) INTO @poly
+      FROM Field
+      WHERE uniqueId = <uniqueId>;
+
+    CALL scisql.scisql_s2CPolyRegion(@poly, 20);
+
+    SELECT sourceId, ra, decl, htmId20
+      FROM Source AS s
+      INNER JOIN scisql.Region AS r ON (s.htmId20 BETWEEN r.htmMin AND r.htmMax)
+      WHERE scisql_s2PtInCPoly(ra, decl, @poly) = 1;
+
+First test involved running 10,000 queries total, all on a single node
+(lsst9) and varying the level of parallelism. During each test all
+queries were started at exactly the same time, and there was no time
+delay introduced between them. Results:
+
++----------------------+-----------+------------------------------+---------------+
+| queries per thread   | threads   | slowest elapsed time [sec]   | queries/sec   |
++----------------------+-----------+------------------------------+---------------+
+| 10,000               | 1         | 466.2                        | 21.5          |
++----------------------+-----------+------------------------------+---------------+
+| 5,000                | 2         | 247.7                        | 20.2          |
++----------------------+-----------+------------------------------+---------------+
+| 2,500                | 4         | 144.4                        | 17.3          |
++----------------------+-----------+------------------------------+---------------+
+| 2,000                | 5         | 124.2                        | 16.1          |
++----------------------+-----------+------------------------------+---------------+
+| 1,250                | 8         | 96.6                         | 12.9          |
++----------------------+-----------+------------------------------+---------------+
+| 1,000                | 10        | 91.8                         | 10.9          |
++----------------------+-----------+------------------------------+---------------+
+| 400                  | 25        | 94.6                         | 4.2           |
++----------------------+-----------+------------------------------+---------------+
+| 200                  | 50        | 95.6                         | 1.0           |
++----------------------+-----------+------------------------------+---------------+
+| 100                  | 100       | 100.0                        | 1.0           |
++----------------------+-----------+------------------------------+---------------+
+
+Based on the timer in the test program, the database response time was
+about the same for each test (~0.2 sec), the limiting factor was threading in
+the python test program that run all threads.
+
+Second test involved querying the database from two different nodes
+(``lsst9`` and ``lsst5``), 100 threads per node. Measured elapsed time was
+comparable to the single-node test:
+
++----------------------+-------------------+------------------------------+---------------+
+| queries per thread   | threads           | slowest elapsed time [sec]   | queries/sec   |
++----------------------+-------------------+------------------------------+---------------+
+| 100                  | 50 x 2 machines   | 109.0                        | 0.9           |
++----------------------+-------------------+------------------------------+---------------+
+
+During this test, average query response time was up (approaching ~0.4
+sec) - less time was spent in the python client, but the server response
+was slower. The limiting factor was server CPU. The server was
+completely cpu bound - all 24 cpus were 100% busy. ``show processlist``
+showed 200 simultaneous queries processed by the server.
+
+During all these tests there was almost no disk I/O activity. This is
+not unexpected, as the entire data set including indexes is < 8 GB in
+size, much smaller than RAM available on ``lsst10``.
+
+Related code: see git repo: ``contrib/forcedPhotDbDemo.git``
+
+About Data Ingest
+-----------------
+
+Counts: ~200 million sources (~6GB + 2GB index), ~200K fields (~15 MB).
+
+Loading the data took: ~35 min, sorting by htmId another 35 min.
+
+Conclusions
+-----------
+
+The server server seems to be handling well 100-200 requests coming in
+simultaneously, and deliver results in well under a second, even under
+heavy load, provided there are no other activities competing for mysqld
+server time and memory. Ideally, it'd be useful to try querying from
+many more clients, but given in practice forced photometry code will
+crunch on the data for ~10 sec, thus there there will be ~10 sec delay
+between queries incoming from the same process, the load seen by the
+server should be much lower than that tested.
+
 
 References
 ==========
@@ -2238,3 +2333,5 @@ References
 .. [*] Original location of this 2009 report: https://dev.lsstcorp.org/trac/wiki/DbStoringRefCat
 
 .. [*] Original location of this 2007 report: https://dev.lsstcorp.org/trac/wiki/db/DC2/PartitioningTests
+
+.. [*] Original location of this 2012 report: https://dev.lsstcorp.org/trac/wiki/db/tests/ForcedPhoto
