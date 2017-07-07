@@ -384,7 +384,7 @@ we had to rebuild indexes after inserting data from each batch. Key
 lessons learned have been documented at
 https://dev.lsstcorp.org/trac/wiki/mysqlLargeTables. Issues we uncovered
 with MySQL (myisamchk) had been reported to the MySQL developers, and
-were fixed immediately fixed.
+were fixed immediately.
 
 In addition, some of the more complex queries, in particular these with
 spatial constraints had to be optimized.\ [*]_ The query
@@ -1655,7 +1655,7 @@ option seems to be:
 
 SDQA Catalogs: - want bright stars: need to apply filter on magnitude -
 want isolated stars: need to identify object without near neighbors -
-see [wiki:SdqaWcsFailureCheckStage] for more details
+see `LSST Trac <https://dev.lsstcorp.org/trac/wiki/SdqaWcsFailureCheckStage>`_ for more details
 
 The former is easy. The latter will require some thinking. It is a
 one-time operation, and we are talking about few million rows (1% of 1
