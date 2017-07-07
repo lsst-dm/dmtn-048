@@ -174,8 +174,8 @@ Compression
 We have done extensive tests to determine whether it is cost effective
 to compress LSST databases. This included measuring how different data
 types and indexes compress, and performance of compressing and
-decompressing data. These tests are described in details at
-https://dev.lsstcorp.org/trac/wiki/MyIsamCompression. We found that
+decompressing data. These tests are described in details :ref:`below <myisam-compression-performance-trac>`.
+We found that
 table data compressed only 50%, but since indexes were not compressed,
 there was only about 20% space savings. Table scans are significantly
 slower due to CPU expense, but short, indexed queries were only impacted
@@ -1132,6 +1132,474 @@ the baseline test. This test took 21 seconds, almost the same as the
 corresponding baseline query B. Conclusion: pushing this computation to
 the stored procedure doesn't visibly improve the performance.
 
+.. _myisam-compression-performance-trac:
+
+MyISAM Compression Performance
+==============================
+
+This section evaluates the compression of MyISAM tables in MySQL in
+order to better understand the benefits and consequences of using
+compression for LSST databases.\ [*]_
+
+Overview
+--------
+
+MyISAM is the default table persistence engine for MySQL, and offers
+excellent read-only performance without transactional or concurrency
+support. Although its performance is well-studied and generally
+understood for web-app and business database demands, we wanted to
+quantify its performance differences with and without compression in
+order to understand how the use of compression would affect LSST data
+access performance.
+
+MyISAM packing compresses column-at-a-time.
+
+1 minute summary
+----------------
+
+Compression works on astro data. Almost half of the tested table is
+floating point, and the data itself compressed about 50%. However,
+indexes did not seem to compress, and if we assume that their space
+footprint is 1.5x the raw data, the overall space savings is only 20%.
+Query performance is impacted, though probably less than twice as slow
+for short queries (perhaps 40-50%). Long queries that need table scans
+seem to slow down significantly as far as CPU, but the I/O savings has
+not been measured. When indexes are used, performance is about the same,
+though the indexes themselves are space-heavy and not compressed.
+
+Goals
+-----
+
+Ideally, we would like to understand the following:
+
+-  What will we gain in storage efficiency? Compression should reduce
+   the data footprint. However, while its effectiveness is understood
+   for text, image (photos and line-art), audio, and machine code, it
+   has been studied relatively little for scientific data, particularly
+   astronomy data. We expect much, if not most, of LSST data to be
+   measured floating-point values, which are likely to be completely
+   unique. Without repeating values or sequences in astro data,
+   compression effectiveness is unclear.
+
+-  What is the performance/speed impact? Specifically:
+
+   -  How expensive is it to compress and uncompress? Although bulk
+      compression and decompression performance is probably not that
+      important, it must be reasonable. Supra-linear increases of time
+      with respect to size are probably not acceptable.
+   -  How will it affect query and processing performance? Although we
+      expect the query performance to be limited by I/O problems like
+      disk bandwidth, interface/bus bandwidth, and memory bandwidth,
+      compression could drive the CPU usage high enough to become a new
+      bottleneck. Still, in many cases, the reduced data traffic could
+      improve performance more than the decompression cost.
+
+Test Conditions
+---------------
+
+We loaded the database with source data from the USNO. It has the
+following schema:
+
+::
+
+    RA (decimal)
+    DEC (decimal)
+    Proper motion RA / yr (milli-arcsec)
+    error in RA pm / yr (milli-arcsec)
+    Proper motion in DEC / yr (milli-arcsec)
+    error in DEC pm / yr (milli-arcsec)
+    epoch of observations in years with 1/10yr increments
+    B mag
+    flag
+    R mag
+    flag
+    B mag2
+    flag2
+    R mag2
+    flag2
+
+More notes that were bundled with the data:
+
+::
+
+    which is a truncated set, but we had it on disk at IGPP.  We can live with
+    out the other fields.
+
+    flags are a measure of how extended the detection was with 0 being
+    extremely extended and 11 being just like the stellar point spread
+    function.
+
+We added an “id” auto-increment field as a primary key.
+
+The corresponding table:
+
++----------+------------+------+-----+---------+----------------+
+| Field    | Type       | Null | Key | Default | Extra          |
++----------+------------+------+-----+---------+----------------+
+| id       | bigint(20) | NO   | PRI | NULL    | auto_increment |
++----------+------------+------+-----+---------+----------------+
+| ra       | float      | YES  |     | NULL    |                |
++----------+------------+------+-----+---------+----------------+
+| decl     | float      | YES  |     | NULL    |                |
++----------+------------+------+-----+---------+----------------+
+| pmra     | int(11)    | YES  |     | NULL    |                |
++----------+------------+------+-----+---------+----------------+
+| pmraerr  | int(11)    | YES  |     | NULL    |                |
++----------+------------+------+-----+---------+----------------+
+| pmdec    | int(11)    | YES  |     | NULL    |                |
++----------+------------+------+-----+---------+----------------+
+| pmdecerr | int(11)    | YES  |     | NULL    |                |
++----------+------------+------+-----+---------+----------------+
+| epoch    | float      | YES  |     | NULL    |                |
++----------+------------+------+-----+---------+----------------+
+| bmag     | float      | YES  | MUL | NULL    |                |
++----------+------------+------+-----+---------+----------------+
+| bmagf    | int(11)    | YES  |     | NULL    |                |
++----------+------------+------+-----+---------+----------------+
+| rmag     | float      | YES  |     | NULL    |                |
++----------+------------+------+-----+---------+----------------+
+| rmagf    | int(11)    | YES  |     | NULL    |                |
++----------+------------+------+-----+---------+----------------+
+| bmag2    | float      | YES  |     | NULL    |                |
++----------+------------+------+-----+---------+----------------+
+| bmagf2   | int(11)    | YES  |     | NULL    |                |
++----------+------------+------+-----+---------+----------------+
+| rmag2    | float      | YES  |     | NULL    |                |
++----------+------------+------+-----+---------+----------------+
+| rmag2f   | int(11)    | YES  |     | NULL    |                |
++----------+------------+------+-----+---------+----------------+
+
+Relevance to real data
+~~~~~~~~~~~~~~~~~~~~~~
+
+This table is narrow compared to the expected column count for LSST, and
+only 7 of 16 columns are floating point fields. It may be appropriate to
+drop/add some of the integer columns so that the fraction of floating
+point columns is the same as what we will be expecting in LSST. For
+reference, here are the type distributions of columns for the LSST
+Object table.
+
++----------+--------+----------------+
+| type     | DC3a   | DC3b (estim)   |
++----------+--------+----------------+
+| FLOAT    | 30     | 142            |
++----------+--------+----------------+
+| DOUBLE   | 14     | 42             |
++----------+--------+----------------+
+| other    | 15     | 21             |
++----------+--------+----------------+
+| total    | 59     | 205            |
++----------+--------+----------------+
+
+DC3a is about 3/4 floating-point, and the current DC3b estimate is about
+90% floating point.
+
+Removing the all the non-float/double columns from the table leaves 7
+float columns and 1 bigint column, giving ~88% floating point values.
+The resulting truncated table was tested as well, although its
+bit-entropy may not match real data better than the original int-heavy
+table.
+
+Hardware configuration
+~~~~~~~~~~~~~~~~~~~~~~
+
+We tested on lsst-dev03, which is a Sun Fire V240 with Solaris 10 and
+16G of memory. The database was stored on a dedicated (for practical
+purposes) disk that was 32% full after loading. MySQL 5.0.27 was used.
+
+Test Queries
+~~~~~~~~~~~~
+
+q1: Retrieve one entire row
+
+::
+
+    SELECT *
+    FROM  %s
+    WHERE id = 40000;
+
+q2: Retrieve about 10% of rows
+
+::
+
+    SELECT  *
+    FROM    %s
+    WHERE   bmag - rmag > 10;
+
+q1b: Retrieve bmag from one row
+
+::
+
+    SELECT bmag
+    FROM  %s
+    WHERE id = 40000;
+
+q2b: Retrieve bmag from about 10% of rows
+
+::
+
+    SELECT  bmag
+    FROM    %s
+    WHERE   bmag - rmag > 10;
+
+Numbers
+~~~~~~~
+
+Bulk Performance for 100 million rows: Times in seconds
+
++-----------------+-----------+----------+
+|                 | w/o idx   | w/ idx   |
++-----------------+-----------+----------+
+| myisampack      | 1418      | 1387     |
++-----------------+-----------+----------+
+| Pack-repair     | 374       | 3200     |
++-----------------+-----------+----------+
+| Unpack          | 412       | 2959     |
++-----------------+-----------+----------+
+| Unpack-repair   | 102       | 2689     |
++-----------------+-----------+----------+
+| Total pack      | 1792      | 4587     |
++-----------------+-----------+----------+
+
+Truncated table (7/8 float)
+
++---------------------+-----------+----------+
+|                     | w/o idx   | w/ idx   |
++---------------------+-----------+----------+
+| myisampack          | 806       | 822      |
++---------------------+-----------+----------+
+| Pack-repair         | 231       | 2567     |
++---------------------+-----------+----------+
+| Unpack              |           | 2414     |
++---------------------+-----------+----------+
+| Unpack-repair       |           | 2194     |
++---------------------+-----------+----------+
+| Total pack          |           | 3389     |
++---------------------+-----------+----------+
+| Total pack row/s    | 9.64e4    | 2.95e4   |
++---------------------+-----------+----------+
+| Total pack byte/s   | 3.57e6    | 1.72e6   |
++---------------------+-----------+----------+
+
+Sizes:
+^^^^^^
+
++----------------+---------+---------+----------------+----------------+
+|                | Table   | Index   | Table(trunc)   | Index(trunc)   |
++----------------+---------+---------+----------------+----------------+
+| Uncompressed   | 7000M   | 1442M   | 3700M          | 2140M          |
++----------------+---------+---------+----------------+----------------+
+| Compressed     | 2001M   | 2142M   | 1703M          | 2140M          |
++----------------+---------+---------+----------------+----------------+
+
+(in 1M = 10\*\*6)
+
+Table size is reduced to 29% of original (49% if indexes are included).
+The truncated table compresses somewhat less: 46% of original (66% if
+indexes are included). Since the indexes do not compress (indeed, they
+may expand), they must be considered in any compression evaluation.
+
+Query Performance:
+^^^^^^^^^^^^^^^^^^
+
+Test 1:
+
++---------------+----------------+---------------+----------+---------------+
+|               | uncompressed   |               | packed   |               |
++---------------+----------------+---------------+----------+---------------+
+|               | No idx         | Id/bmag idx   | No idx   | Id/bmag idx   |
++---------------+----------------+---------------+----------+---------------+
+| q1: sel row   | 63.8           | 0.15          | 237      | 0.11          |
++---------------+----------------+---------------+----------+---------------+
+| q2: filter    | 304.9          | 303.8         | 327.2    | 307.5         |
++---------------+----------------+---------------+----------+---------------+
+
+Notes: the uncompressed q1 time is fishy. I couldn't reproduce it.
+
+Test 2:
+
++-------+----------+---------------+------------+---------------+
+|       | packed   |               | Unpacked   |               |
++-------+----------+---------------+------------+---------------+
+|       | no idx   | id/bmag idx   | no idx     | id/bmag idx   |
++-------+----------+---------------+------------+---------------+
+| q1    | 270.16   | 0.07          | 192.54     | 0.05          |
++-------+----------+---------------+------------+---------------+
+| q2    | 290.35   | 307.2         | 407.29     | 309.06        |
++-------+----------+---------------+------------+---------------+
+| q1b   | 267.24   | 0.22          | 192.6      | 0.16          |
++-------+----------+---------------+------------+---------------+
+| q2b   | 178.09   | 152.05        | 242.38     | 154.01        |
++-------+----------+---------------+------------+---------------+
+
+Additional runs:
+
++------------+---------------+----------------------+---------------+----------------------------+---------------+
+| Unpacked   |               | Unpacked (w/flush)   |               | Unpacked (flush+restart)   |               |
++------------+---------------+----------------------+---------------+----------------------------+---------------+
+| no idx     | id/bmag idx   | no idx               | id/bmag idx   | no idx                     | id/bmag idx   |
++------------+---------------+----------------------+---------------+----------------------------+---------------+
+| 192.36     | 0.06          | 143.23               | 0.04          | 97.96                      | 0.05          |
++------------+---------------+----------------------+---------------+----------------------------+---------------+
+| 407.24     | 255.23        | 272.96               | 255.82        | 265.14                     | 283.37        |
++------------+---------------+----------------------+---------------+----------------------------+---------------+
+| 192.65     | 0.16          | 136.1                | 0.17          | 100.64                     | 0.17          |
++------------+---------------+----------------------+---------------+----------------------------+---------------+
+| 242.61     | 92.41         | 100.01               | 92.02         | 92.45                      | 196           |
++------------+---------------+----------------------+---------------+----------------------------+---------------+
+
+Relative times: (packed/unpacked time, test 2)
+
++-------+------------+---------+
+|       | No index   | Index   |
++-------+------------+---------+
+| q1    | 1.4        | 1.46    |
++-------+------------+---------+
+| q2    | 0.71       | 0.99    |
++-------+------------+---------+
+| q1b   | 1.39       | 1.41    |
++-------+------------+---------+
+| q2b   | 0.73       | 0.99    |
++-------+------------+---------+
+
+Truncated performance
+---------------------
+
+We re-evaluated query performance on the truncated table. To enhance
+reproducibility, we ran query sets three times under each condition,
+flushing tables before the repeated sets (flush, then 4 queries,
+thrice). OS buffers were not cleared, so the results should indicate
+fully disk-cached performance.
+
+Unpacked:
+
++-------+-----------------+----------+----------+------------+---------+----------+
+|       | Id/bmag index   |          |          | No index   |         |          |
++-------+-----------------+----------+----------+------------+---------+----------+
+|       | 1               | 2        | 3        | 1          | 2       | 3        |
++-------+-----------------+----------+----------+------------+---------+----------+
+| q1    | 0.05            | 0.04     | 0.04     | 56.31      | 38.53   | 38.53    |
++-------+-----------------+----------+----------+------------+---------+----------+
+| q2    | 230.09          | 206.85   | 207.34   | 206.43     | 206.2   | 206.05   |
++-------+-----------------+----------+----------+------------+---------+----------+
+| q1b   | 0.13            | 0.15     | 0.15     | 38.53      | 44.12   | 38.54    |
++-------+-----------------+----------+----------+------------+---------+----------+
+| q2b   | 100.38          | 103.55   | 91.8     | 84.21      | 84.15   | 84.28    |
++-------+-----------------+----------+----------+------------+---------+----------+
+
+Packed:
+
++-------+-----------------+----------+----------+------------+----------+----------+
+|       | Id/bmag index   |          |          | No index   |          |          |
++-------+-----------------+----------+----------+------------+----------+----------+
+|       | 1               | 2        | 3        | 1          | 2        | 3        |
++-------+-----------------+----------+----------+------------+----------+----------+
+| q1    | 0.09            | 0.05     | 0.05     | 178.87     | 135.3    | 135.22   |
++-------+-----------------+----------+----------+------------+----------+----------+
+| q2    | 339.21          | 307.46   | 307.14   | 307.99     | 307.53   | 307.69   |
++-------+-----------------+----------+----------+------------+----------+----------+
+| q1b   | 0.15            | 0.26     | 0.13     | 137.04     | 135.31   | 135.43   |
++-------+-----------------+----------+----------+------------+----------+----------+
+| q2b   | 185.73          | 183.39   | 186.06   | 184.26     | 184.26   | 184.3    |
++-------+-----------------+----------+----------+------------+----------+----------+
+
+Avg (2nd/3rd runs) compression penalty:
+
++-------+---------------+----------+
+|       | id/bmag idx   | no idx   |
++-------+---------------+----------+
+| q1    | 0.05          | 0.72     |
++-------+---------------+----------+
+| q2    | 0.33          | 0.33     |
++-------+---------------+----------+
+| q1b   | 0.23          | 0.69     |
++-------+---------------+----------+
+| q2b   | 0.47          | 0.54     |
++-------+---------------+----------+
+
+Error calculations:
+
++-------+-------------------+----------+---------------------+----------+--------------------+----------+----------------------+----------+
+|       | avg perf packed   |          | avg perf unpacked   |          | rms error packed   |          | rms error unpacked   |          |
++-------+-------------------+----------+---------------------+----------+--------------------+----------+----------------------+----------+
+|       | id/bmag idx       | no idx   | id/bmag idx         | no idx   | id/bmag idx        | no idx   | id/bmag idx          | no idx   |
++-------+-------------------+----------+---------------------+----------+--------------------+----------+----------------------+----------+
+| q1    | 0.05              | 135.26   | 0.04                | 38.53    | 0                  | 0.04     | 0                    | 0        |
++-------+-------------------+----------+---------------------+----------+--------------------+----------+----------------------+----------+
+| q2    | 307.3             | 307.61   | 207.1               | 206.13   | 0.16               | 0.08     | 0.25                 | 0.07     |
++-------+-------------------+----------+---------------------+----------+--------------------+----------+----------------------+----------+
+| q1b   | 0.2               | 135.37   | 0.15                | 41.33    | 0.07               | 0.06     | 0                    | 2.79     |
++-------+-------------------+----------+---------------------+----------+--------------------+----------+----------------------+----------+
+| q2b   | 184.73            | 184.28   | 97.68               | 84.21    | 1.34               | 0.02     | 5.88                 | 0.07     |
++-------+-------------------+----------+---------------------+----------+--------------------+----------+----------------------+----------+
+
+Results discussion
+------------------
+
+Since re-running and timing the queries on the truncated tables with an
+eye towards consistency and reproducibility, the picture has become a
+bit different. This discussion will be limited to the truncated table
+results, where the second and third runs are largely consistent as they
+should be fully cached.
+
+-  Indexes only helped for the queries that selected single rows.
+   Wherever an index was available and exploited, compression did not
+   have a significant impact. Note that q1b with indexes seems worse
+   with compression, but the difference is within the rms error (34% for
+   q1b packed, w/indexes) for its timings.
+
+Since indexes are never compressed, this makes sense. If the query
+exploits an index, compression should not matter since the index is
+structurally the same regardless of compression.
+
+-  For those queries which were not optimized by indexes, compressed
+   performance was a lot worse. With indexes, the degradation was
+   between 5% to 47% and without indexes, between 33% to 72%.
+
+Since these are timings for the fully-cached (OS and MySQL) conditions,
+bandwidth savings, the only possible benefit of compression, is ignored,
+and we measure only the CPU impact.
+
+-  Since we expect query performance to be disk-limited, and compression
+   effectively reduces the table sizes by 50% or more (excluding
+   indexes), we should test further and include I/O effects. In
+   particular, the balance between CPU performance and disk performance
+   is crucial. The test machine's generous memory capacity (16GB)
+   relative to the table size (7GB uncompressed) makes uncached testing
+   difficult.
+
+Measurement variability
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Results seemed largely reproducible until additional steps were taken to
+control conditions (via “flush table” and server restarting). Oddly
+enough, flushing tables or restarting the server seemed to improve
+performance for non-indexed, non-compressed situations (compressed
+tables have not been retested).
+
+So far, none of the tests have included flushing OS disk buffers, since
+we don't know of a quick way in Solaris (and the machine has 16G of
+memory).
+
+MySQL performance itself seems to be quite complex, and sometimes
+surprising (should “flush table” improve performance?). To get better
+than factor-of-two estimates, we need to control conditions more
+aggressively and retest.
+
+Take-home messages (“conclusions”)
+----------------------------------
+
+-  Compression and uncompression take reasonable amounts of time.
+-  Rebuilding indexes is about expensive as the
+   compression/uncompression
+-  Compression could effectively double the amount of store-able data,
+   should the data be similar in distribution and variability to the
+   USNO data.
+-  Despite the measurement variability, we can guess that table scans
+   are impacted 40-60% in CPU (while I/O is cut about 50%), and short
+   row-retrieval takes a similar hit (though less than 2x). Where
+   indexes are exploited, the difference seems small (as expected).
+
 
 References
 ==========
@@ -1159,3 +1627,5 @@ References
 .. [*] Original location of this 2009 report: https://dev.lsstcorp.org/trac/wiki/db/BuildSubPart
 
 .. [*] Original location of this 2009 report: https://dev.lsstcorp.org/trac/wiki/db/SubPartOverhead
+
+.. [*] Original location of this 2009 report: https://dev.lsstcorp.org/trac/wiki/MyIsamCompression
