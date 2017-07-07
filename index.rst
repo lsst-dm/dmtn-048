@@ -75,8 +75,8 @@ and reordering predicates. We run these tests for all reasonable table
 sizes (using MySQL and PostgreSQL). We measured CPU and disk I/O to
 estimate impact on hardware. In addition, we re-run these tests on the
 lsst10 machine at NCSA to understand what performance we may expect
-there for DC3b. These tests are documented at
-https://dev.lsstcorp.org/trac/wiki/db/SpatialJoinPerf. We found that
+there for DC3b. These tests are documented :ref:`below <spatial-join-performance-trac>`.
+We found that
 PostgreSQL was 3.7x slower for spatial joins over a range of row counts,
 and reducing the row-count per partition to less than 5k rows was
 crucial in achieving lowering compute intensity, but that predicate
@@ -375,7 +375,7 @@ Winter-2013 Data Challenge: multi-billion-row table
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The early Winter 2013 production resulted in 2.6 TB database; the
-largest table, ForcedSource, had nearly 4 billion rows.\ [#]_
+largest table, ForcedSource, had nearly 4 billion rows.\ [*]_
 Dealing with multi-billion row table is non-trivial are requires special
 handling and optimizations. Some operations, such as building an index
 tend to take a long time (tens of hours), and a single ill-tuned
@@ -388,17 +388,9 @@ with MySQL (myisamchk) had been reported to the MySQL developers, and
 were fixed immediately fixed.
 
 In addition, some of the more complex queries, in particular these with
-spatial constraints had to be optimized.\ [#]_ The query
+spatial constraints had to be optimized.\ [*]_ The query
 optimizations have been documented at
 https://dev.lsstcorp.org/trac/wiki/db/MySQL/Optimizations.
-
-.. [#] It is worth noting that in real production we do not anticipate
-   to manage billion+ rows in a *single physical table* - the Qserv system
-   that we are developing will split every large table into smaller,
-   manageable pieces.
-
-.. [#] Some of these optimizations will not be required when we use
-   Qserv, as Qserv will apply them internally.
 
 .. _other-demonstrations:
 
@@ -537,6 +529,278 @@ have access to. We have successfully demonstrated Qserv have no
 architectural issues or hardcoded values such as ports or paths that
 would prevent us from running multiple instances on a single machine.
 
+.. _spatial-join-performance-trac:
+
+Spatial Join Performance
+========================
+
+This page describes performance of spatial join queries as of early 2010.\ [*]_
+
+In practice, we expect spatial joins on Object table only. To avoid the
+join on multi-billion row table, the table will be partitioned
+(chunked), as described in :cite:`Document-26276`.
+The queries discussed here correspond to a query executed
+on a single chunk; e.g., table partitioning and distribution of
+partitions across disks or nodes are not considered here. It is expected
+many such chunk-based queries will execute in parallel.
+
+Used schema:
+
+.. code:: sql
+
+    CREATE TABLE X (
+      objectId  BIGINT NOT NULL PRIMARY KEY,
+      ra        FLOAT NOT NULL,
+      decl      FLOAT NOT NULL,
+      muRA      FLOAT NOT NULL,
+      muRAErr   FLOAT NOT NULL,
+      muDecl    FLOAT NOT NULL,
+      muDeclErr FLOAT NOT NULL,
+      epoch     FLOAT NOT NULL,
+      bMag      FLOAT NOT NULL,
+      bFlag     FLOAT NOT NULL,
+      rMag      FLOAT NOT NULL,
+      rFlag     FLOAT NOT NULL,
+      b2Mag     FLOAT NOT NULL,
+      b2Flag    FLOAT NOT NULL,
+      r2Mag     FLOAT NOT NULL,
+      r2Flag    FLOAT NOT NULL
+    )
+
+Used data: USNO catalog.
+
+A first version of the query:
+
+.. code:: sql
+
+    SELECT count(*)
+    FROM   X o1, X o2
+    WHERE  o1.objectId <> o2.objectId
+      AND  ABS(o1.ra - o2.ra) < 0.00083 / COS(RADIANS(o2.decl))
+      AND ABS(o1.decl - o2.decl) < 0.00083
+
+Precalculating COS(RADIANS(decl)):
+
+.. code:: sql
+
+      ALTER TABLE X ADD COLUMN cosRadDecl FLOAT
+      UPDATE X set cosRadDecl = COS(RADIANS(decl))
+
+and changing the order of predicates as follows:
+
+.. code:: sql
+
+    SELECT count(*)
+    FROM   X o1, X o2
+    WHERE  ABS(o1.ra - o2.ra) < 0.00083 / o2.cosRadDecl
+      AND  ABS(o1.decl - o2.decl) < 0.00083
+      AND  o1.objectId <> o2.objectId
+
+improves the execution time by 36% for mysql, and 38% for postgres.
+
+Here is the timing for this (optimized) query.
+
++---------+---------+------------+
+| nRows   | mysql   | postgres   |
++---------+---------+------------+
+| [K]     | [sec]   | [sec]      |
++---------+---------+------------+
+| 1       | 1       | 5          |
++---------+---------+------------+
+| 2       | 5       | 19         |
++---------+---------+------------+
+| 3       | 11      | 40         |
++---------+---------+------------+
+| 4       | 18      | 69         |
++---------+---------+------------+
+| 5       | 28      | 103        |
++---------+---------+------------+
+| 10      | 101     | 371        |
++---------+---------+------------+
+| 15      | 215     | 797        |
++---------+---------+------------+
+| 20      | 368     |            |
++---------+---------+------------+
+| 25      | 566     |            |
++---------+---------+------------+
+
+Postgres is ~3.7x slower than mysql in this case. It is probably
+possible to tune postgreSQL a little, but is it unlikely it will match
+MySQL performance.
+
+Each of these queries for both mysql and postgres were completely
+CPU-dominated. The test was executed on an old-ish Sun 1503 MHz sparcv9
+processor.
+
+Also, see: :cite:`Document-11701` - the test rerun on a fast machine (dash-io).
+
+Using index
+-----------
+
+The near neighbor query can be further optimized by introducing an
+index. Based on the tests we run with mysql, in order to force mysql to
+use an index for this particular query, we have to build a composite
+index on all used columns, or build a composite index on (ra, decl,
+cosRadDecl) and remove o1.objectId <> o2.objectId predicate (this
+predicate would have to be applied in a separate step). The timing for
+the query with index and without the objectId comparison:
+
++---------+---------+---------+----------+
+| nRows   | was     | now     | faster   |
++---------+---------+---------+----------+
+| [K]     | [sec]   | [sec]   | [%       |
++---------+---------+---------+----------+
+| 5       | 28      | 16.7    | 40       |
++---------+---------+---------+----------+
+| 10      | 101     | 67.2    | 33       |
++---------+---------+---------+----------+
+| 15      | 215     | 150.8   | 30       |
++---------+---------+---------+----------+
+| 20      | 368     | 269.5   | 27       |
++---------+---------+---------+----------+
+| 25      | 566     | 420.3   | 26       |
++---------+---------+---------+----------+
+
+The speedup from using an index will likely be bigger for wider tables.
+
+CPU utilization
+---------------
+
+How many CPUs do we need to do full correlation on 1 billion row table
+(DC3b)?
+
++-------------+--------------+---------------+--------------+--------------------+
+| # chunks    | rows/chunk   | seconds per   | total        | total core-hours   |
++-------------+--------------+---------------+--------------+--------------------+
+|             |              | self-join     | core-hours   | if 16 cores used   |
++-------------+--------------+---------------+--------------+--------------------+
+|             |              | in 1 chunk    | needed       | twice faster       |
++-------------+--------------+---------------+--------------+--------------------+
+| 40,000      | 25,000       | 566           | 6,289        | 196                |
++-------------+--------------+---------------+--------------+--------------------+
+| 50,000      | 20,000       | 368           | 5,111        | 160                |
++-------------+--------------+---------------+--------------+--------------------+
+| 66,666      | 15,000       | 215           | 3,981        | 124                |
++-------------+--------------+---------------+--------------+--------------------+
+| 100,000     | 10,000       | 101           | 2,806        | 88                 |
++-------------+--------------+---------------+--------------+--------------------+
+| 200,000     | 5,000        | 28            | 1,556        | 49                 |
++-------------+--------------+---------------+--------------+--------------------+
+| 250,000     | 4,000        | 18            | 1,250        | 39                 |
++-------------+--------------+---------------+--------------+--------------------+
+| 333,333     | 3,000        | 11            | 1,019        | 31                 |
++-------------+--------------+---------------+--------------+--------------------+
+| 500,000     | 2,000        | 5             | 694          | 22                 |
++-------------+--------------+---------------+--------------+--------------------+
+| 1,000,000   | 1,000        | 1             | 278          |                    |
++-------------+--------------+---------------+--------------+--------------------+
+
+Realistically, we can count on ~2 8-core servers, ~twice faster than the
+CPUs used in these tests. That means 1 million chunk version would
+finish in 9 hours, 66K chunk version would need 5 days to finish.
+
+Near neighbor without building sub-chunking
+-------------------------------------------
+
+We tested the performance of running nn query without explicitly
+building sub-chunking. In all these tests describe here we tried to run
+nn on a 1 million row table. A starting point is 1000 sec (1 sec per 1K
+rows), which is ~16 min 40 sec.
+
+First test: running near neighbor query by selecting rows with given
+subChunkId into in memory table and running nn query there. This test is
+`here </_static/test001.py>`__. It took
+7 min 43 sec.
+
+Second test: running near neighbor query by running neighbor once for
+each subChunkId, without building sub-chunks. This test is `here </_static/test002.py>`__. It took
+39 min29 sec.
+
+Third test: runnig near neighbor query by mini-near neighbor once for
+each subChunkId, without building sub-chunks, using in-memory table.
+This test is `here </_static/test003.py>`__. It took 13 min 13 sec.
+
+Near neighbor with predicates
+-----------------------------
+
+Note that full n^2 correlation without any cuts is the worst possible
+spatial join, rarely needed in practice. A most useful form of near
+neighbour search is a correlation with some predicates. Here is an
+example hypothetical (non-scientific) query, written for the data set
+used in our tests:
+
+.. code:: sql
+
+    SELECT count(*)
+    FROM   X o1, X o2
+    WHERE  o1.bMag BETWEEN 20 AND 20.13
+      AND  o2.rMag BETWEEN 19.97 AND 20.15
+      AND  ABS(o1.ra - o2.ra) < 0.00083 / o2.cosRadDecl
+      AND  ABS(o1.decl - o2.decl) < 0.00083
+      AND  o1.objectId <> o2.objectId
+
+For the data used, the applied o1.bMag cut selects ~2% of the table, so
+does the o2.rMag cut (if applied independently).
+
+With these cuts, the near neighbour query on 25K-row table takes 0.3 sec
+in mysql and 1 sec in postgres (it'd probably run even faster with
+indexes on bMag and rMag). So if we used mysql we would need only 3
+(1503 MHz) CPUs do run query over 1 billion rows in one hour.
+
+For selectivity 20% it takes mysql 12 sec to finish and postgres needs
+35 sec. In this case mysql would need 133 (1503 MHz) CPUs to run this
+query over 1 billion rows in one hour.
+
+This clearly shows predicate selectivity is one of the most important
+factors determining how slow/fast the spatial queries will run. In
+practice, if the selectivity is <10%, chunk size = ~25K or 50K rows
+should work well.
+
+``[perhaps we need to do more detailed study regarding predicate selectivity]``
+
+Numbers for lsst10
+------------------
+
+As of late 2009 the lsst10 server had 8 cores.
+
+Elapsed time for a single job is comparable to elapsed time of 8 jobs
+run in parallel (difference is within 2-3%, except for very small
+partitions, where it reaches 10%).
+
+Testing involved running 8 “jobs”, where each job was a set of queries
+executed sequentially. Each query was a near neighbor query:
+
+.. code:: sql
+
+    SELECT count(*) AS neighbors
+    FROM   XX o1 FORCE INDEX (idxRDC),
+           XX o2 FORCE INDEX (idxRDC)
+    WHERE  ABS(o1.decl - o2.decl) < 0.00083
+      AND  ABS(o1.ra - o2.ra) < 0.00083 / o2.cosRadDecl
+
+    -- idxRDC was defined as "ADD INDEX idxRDC(ra, decl, cosRadDecl)"
+
+Each query run on a single partition. Results:
+
++----------------------+--------------------------------------+----------------------------------+------------------------------------+
+| rows per partition   | seconds to self-join one partition   | rows processed per elapsed sec   | time to process 150m rows (DC3b)   |
++----------------------+--------------------------------------+----------------------------------+------------------------------------+
+| 0.5K                 | 0.05                                 | 80K                              | 31min                              |
++----------------------+--------------------------------------+----------------------------------+------------------------------------+
+| 1K                   | 0.16                                 | 50K                              | 50min                              |
++----------------------+--------------------------------------+----------------------------------+------------------------------------+
+| 2K                   | 0.59                                 | 27K                              | 1h 32min                           |
++----------------------+--------------------------------------+----------------------------------+------------------------------------+
+| 5K                   | 3.63                                 | 11K                              | 3h 47min                           |
++----------------------+--------------------------------------+----------------------------------+------------------------------------+
+| 10K                  | 14.68                                | 5.5K                             | 7h 39min                           |
++----------------------+--------------------------------------+----------------------------------+------------------------------------+
+| 15K                  | 40.09                                | 3K                               | 14h                                |
++----------------------+--------------------------------------+----------------------------------+------------------------------------+
+
+See `200909nearNeigh-lsst10.xls </_static/200909nearNeigh-lsst10.xls>`__ for details.
+
+
 References
 ==========
 
@@ -549,3 +813,13 @@ References
   This document was originally published as a part of :cite:`Document-11625` and then part of :cite:`LDM-135`.
 
 .. _XRootD: http://xrootd.org
+
+.. [*] It is worth noting that in real production we do not anticipate
+   to manage billion+ rows in a *single physical table* - the Qserv system
+   that we are developing will split every large table into smaller,
+   manageable pieces.
+
+.. [*] Some of these optimizations will not be required when we use
+   Qserv, as Qserv will apply them internally.
+
+.. [*] Original location of this report: https://dev.lsstcorp.org/trac/wiki/db/SpatialJoinPerf
