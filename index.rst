@@ -1669,7 +1669,7 @@ Options:
 [**This needs investigation**]
 
 Spatial index: we are considering using
-`DIF <http://ross.iasfbo.inaf.it/dif/>`__.
+`DIF <http://ross.iasfbo.inaf.it/dif/>`__ :cite:`2008ASPC..394..487N`.
 
 .. todo::
 
